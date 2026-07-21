@@ -1,8 +1,9 @@
-//! Hand-rolled instruction encoding for the handful of native/SPL programs a
-//! transfer-building tool plugin needs: System, SPL Token / Token-2022, and
-//! the Associated Token Account and Memo programs. Every byte layout here is
-//! cited against the program's own source (see each submodule), not
-//! reconstructed from memory.
+//! Hand-rolled instruction encoding for the handful of native/SPL/program
+//! integrations a transfer-building or subscription tool plugin needs:
+//! System, SPL Token / Token-2022, the Associated Token Account and Memo
+//! programs, and Solana Foundation's Subscriptions & Allowances program.
+//! Every byte layout here is cited against the program's own source (see
+//! each submodule), not reconstructed from memory.
 //!
 //! Module boundaries mirror `solana-program`'s own (`system_instruction`,
 //! `spl_token_interface::instruction`, ...) so a reviewer already familiar
@@ -10,6 +11,7 @@
 
 pub mod associated_token_account;
 pub mod memo;
+pub mod subscriptions;
 pub mod system;
 pub mod token;
 

@@ -3,18 +3,14 @@
 //! read side complementing [`crate::instruction::token`]'s encode side.
 //!
 //! Base layouts and the Token-2022 extension TLV format are verified
-//! against the real program's own source (`solana-program/token-2022`,
-//! `interface/src/{state,extension/mod,extension/transfer_fee,
-//! extension/permanent_delegate,extension/transfer_hook}.rs`), not
-//! reconstructed from a description — this is exactly the kind of subtle
-//! wire format that's easy to get wrong from memory. One non-obvious detail
-//! worth calling out explicitly, straight from that source's own comment: a
-//! *mint* with extensions is zero-padded out to 165 bytes (the token
-//! *account* size) before its extension data starts, so both mints and
-//! token accounts locate their `AccountType` marker at the same absolute
-//! offset (165) and their TLV data at the same offset (166) — deliberate
-//! upstream, so an extended mint can never be misread as an extended
-//! account (or vice versa) purely from size.
+//! against `solana-program/token-2022`'s own source (`interface/src/
+//! {state,extension/mod,extension/transfer_fee,extension/permanent_delegate,
+//! extension/transfer_hook}.rs`), not reconstructed from a description. One
+//! non-obvious detail: a *mint* with extensions is zero-padded out to 165
+//! bytes (the token *account* size) before its extension data starts, so
+//! both mints and accounts locate their `AccountType` marker at the same
+//! offset (165) — deliberate upstream, so an extended mint can never be
+//! misread as an extended account purely from size.
 
 use crate::pubkey::Pubkey;
 

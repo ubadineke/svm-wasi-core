@@ -50,13 +50,11 @@ impl CompiledInstruction {
     }
 }
 
-/// Appends a compact-u16 length prefix. `len` is always the size of a
-/// message-internal list (accounts, instructions, lookups...), which is
-/// structurally bounded by the ~1232-byte transaction wire limit — many
-/// orders of magnitude below `u16::MAX` for any buildable transaction — so a
-/// truncating cast here can't lose data in practice; the assert exists so a
-/// future caller who violates that assumption fails loudly in tests rather
-/// than silently corrupting the wire format.
+/// Appends a compact-u16 length prefix. `len` is always a message-internal
+/// list length, structurally bounded by the ~1232-byte transaction wire
+/// limit — far below `u16::MAX` — so the truncating cast is safe; the
+/// assert exists so a future violation fails loudly instead of silently
+/// corrupting the wire format.
 pub(crate) fn push_short_vec_len(buf: &mut Vec<u8>, len: usize) {
     debug_assert!(
         len <= u16::MAX as usize,

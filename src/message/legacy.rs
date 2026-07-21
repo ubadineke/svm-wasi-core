@@ -42,18 +42,14 @@ impl Message {
     }
 
     /// Builds a durable-nonce transaction: `advance_nonce_account` is
-    /// prepended as instruction 0 (the placement the runtime requires — it
-    /// consumes the nonce before anything else in the transaction can
-    /// fail), and `recent_blockhash` is set to the nonce account's own
-    /// stored blockhash-equivalent value rather than a freshly fetched one.
-    /// This is the direct fix for the bounty's "trap #1": an
-    /// approval-gated payment built with a normal blockhash goes stale the
-    /// moment a human doesn't approve within ~60-90 seconds; one built
-    /// against a durable nonce stays valid until it's actually advanced.
+    /// prepended as instruction 0 (consumed before anything else can fail),
+    /// and `recent_blockhash` is the nonce account's own stored value, not
+    /// a freshly fetched one. Fixes the bounty's "trap #1": a normal
+    /// blockhash goes stale in ~60-90s waiting on human approval; a durable
+    /// nonce stays valid until actually advanced.
     ///
     /// `nonce_blockhash` should come from [`crate::nonce::NonceAccount::
-    /// usable_blockhash`] on the nonce account's freshly fetched state —
-    /// not from `getLatestBlockhash`.
+    /// usable_blockhash`], not `getLatestBlockhash`.
     pub fn try_compile_with_durable_nonce(
         payer: &Pubkey,
         nonce_account: &Pubkey,

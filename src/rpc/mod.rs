@@ -1,22 +1,21 @@
 //! A minimal, mockable JSON-RPC client for the handful of Solana RPC
-//! methods a build-only tool plugin actually needs — not a port of
-//! `solana-client`, which assumes native sockets/TLS that don't exist
-//! inside a wasm32-wasip2 component (the bounty's own stated "trap #2").
+//! methods a build-only tool plugin needs — not a port of `solana-client`,
+//! which assumes native sockets/TLS unavailable inside a wasm32-wasip2
+//! component (the bounty's own "trap #2").
 //!
-//! The transport is a trait so `cargo test` can mock every response and
-//! never touch the network (a hard requirement: "Mock the RPC, no live
-//! network in tests"). The real `wasi:http` transport, built on `waki`,
-//! lives in [`waki_transport`] and is compiled only for the wasm target;
-//! [`mock::MockTransport`] replays canned responses for host tests.
+//! The transport is a trait so `cargo test` mocks every response and never
+//! touches the network. The real `wasi:http` transport lives in
+//! [`waki_transport`] (wasm-only); [`mock::MockTransport`] replays canned
+//! responses for host tests.
 //!
-//! Response shapes are the documented Solana JSON-RPC schema
-//! (`https://solana.com/docs/rpc/http`) — every method requests
-//! `encoding: "base64"` where applicable so [`AccountInfo`] is one
-//! consistent shape across `getAccountInfo`, `getMultipleAccounts`, and
-//! `getTokenAccountsByOwner`, rather than three different parsers for
-//! `base64` vs `jsonParsed` vs `base58`.
+//! Every method requests `encoding: "base64"` where applicable, so
+//! [`AccountInfo`] is one consistent shape across `getAccountInfo`,
+//! `getMultipleAccounts`, and `getTokenAccountsByOwner` — not three
+//! different parsers for `base64` vs `jsonParsed` vs `base58`.
 
 pub mod mock;
+#[cfg(feature = "native-http")]
+pub mod native_transport;
 #[cfg(target_family = "wasm")]
 pub mod waki_transport;
 
@@ -38,13 +37,11 @@ pub enum RpcError {
     Decode(String),
 }
 
-/// The boundary a transport must implement: given a fully-formed JSON-RPC
-/// 2.0 request object, return the raw response object (whatever shape the
-/// server sent — `{"result": ...}` or `{"error": {...}}`), or a
-/// transport-level error (connection refused, non-200 status, timeout).
-/// Envelope parsing (`result` vs `error`, pulling `value` out of the common
-/// `{context, value}` wrapper) happens one level up in [`RpcClient`], so the
-/// real transport and test mocks share exactly one implementation of it.
+/// The boundary a transport must implement: send a JSON-RPC 2.0 request,
+/// return the raw response object (`{"result":...}` or `{"error":...}`),
+/// or a transport-level error. Envelope parsing happens one level up in
+/// [`RpcClient`], so the real transport and test mocks share one
+/// implementation of it.
 pub trait RpcTransport {
     fn send(&self, request: Value) -> Result<Value, RpcError>;
 }
@@ -255,8 +252,10 @@ impl<T: RpcTransport> RpcClient<T> {
         &self,
         token_account: &Pubkey,
     ) -> Result<TokenAmount, RpcError> {
-        let value =
-            self.call_value("getTokenAccountBalance", json!([token_account.to_string()]))?;
+        let value = self.call_value(
+            "getTokenAccountBalance",
+            json!([token_account.to_string(), {"commitment": "confirmed"}]),
+        )?;
         let amount = require(&value, "amount")?
             .as_str()
             .ok_or_else(|| RpcError::Decode("`amount` is not a string".into()))?
@@ -326,13 +325,19 @@ impl<T: RpcTransport> RpcClient<T> {
     }
 
     /// Returns the transaction signature (base58) on success. The bounty's
-    /// own custody ladder means this is the one method a T1 ("Build") tool
-    /// plugin should never call — it returns an unsigned tx for a human or
-    /// the host to submit instead.
+    /// custody ladder means a T1 ("Build") plugin should never call this —
+    /// it returns an unsigned tx for a human or host to submit instead.
+    ///
+    /// Requests `preflightCommitment: "confirmed"` (matching
+    /// [`Self::get_latest_blockhash`]'s commitment) rather than the RPC's
+    /// `finalized` default — otherwise a blockhash fetched at `confirmed`
+    /// can fail preflight with "Blockhash not found", since finalization
+    /// lags confirmation by tens of slots. Verified against real devnet
+    /// behavior, not just the docs.
     pub fn send_transaction(&self, transaction_base64: &str) -> Result<String, RpcError> {
         let result = self.call(
             "sendTransaction",
-            json!([transaction_base64, {"encoding": "base64"}]),
+            json!([transaction_base64, {"encoding": "base64", "preflightCommitment": "confirmed"}]),
         )?;
         result
             .as_str()
@@ -450,11 +455,10 @@ mod tests {
     }
 
     /// Real, documented Solana JSON-RPC response shapes
-    /// (`https://solana.com/docs/rpc/http`), hand-built against the schema
-    /// rather than reconstructed from memory of a specific call — the
-    /// pubkeys/blockhash reused here are real mainnet values already
-    /// verified elsewhere in this crate (see `pubkey::tests::
-    /// find_program_address_known_answer_mainnet_ata`), not invented ones.
+    /// (`https://solana.com/docs/rpc/http`), hand-built against the
+    /// schema. Reuses real mainnet pubkeys/blockhash already verified
+    /// elsewhere in this crate (see `pubkey::tests::
+    /// find_program_address_known_answer_mainnet_ata`).
     mod fixtures {
         use super::*;
 

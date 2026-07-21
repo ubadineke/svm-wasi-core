@@ -204,23 +204,10 @@ mod tests {
         assert_eq!(address, reproduced);
     }
 
-    /// Known-answer test: the canonical Associated Token Account for a real
-    /// mainnet wallet holding USDC.
-    ///
-    /// Seeds/order per `spl_associated_token_account_interface::address`
-    /// (solana-program/associated-token-account, `interface/src/address.rs`):
-    /// `[wallet, token_program_id, mint]` under the ATA program id.
-    ///
-    /// Cross-checked two independent ways, neither of which reuses this
-    /// crate's own implementation:
-    /// 1. A from-scratch Python re-implementation of SHA-256 PDA derivation
-    ///    plus ed25519 point decompression (the standard field-arithmetic
-    ///    algorithm, independent of `curve25519-dalek`) produced the same
-    ///    address and bump.
-    /// 2. That derived address was confirmed to actually exist on Solana
-    ///    mainnet as this wallet's USDC token account via
-    ///    `getTokenAccountsByOwner` against `api.mainnet-beta.solana.com`
-    ///    (slot 433648265).
+    /// Known-answer test: derives a real mainnet wallet's USDC ATA
+    /// (`[wallet, token_program_id, mint]` seeds). Cross-checked against an
+    /// independent from-scratch Python re-implementation and confirmed
+    /// on-chain via `getTokenAccountsByOwner` (slot 433648265).
     #[test]
     fn find_program_address_known_answer_mainnet_ata() {
         let wallet = Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1").unwrap();

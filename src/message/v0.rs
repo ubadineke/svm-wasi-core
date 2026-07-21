@@ -64,12 +64,10 @@ pub struct Message {
 }
 
 impl Message {
-    /// Compiles `instructions` into a v0 message. Any account eligible for
-    /// address-table lookup (not a signer, not an invoked program, not the
-    /// durable-nonce account) that appears in one of
-    /// `address_lookup_table_accounts` is moved out of the static key list
-    /// and into that table's lookup entry instead, in the order the tables
-    /// are given.
+    /// Compiles `instructions` into a v0 message. Any eligible account (not
+    /// a signer, invoked program, or the nonce account) present in
+    /// `address_lookup_table_accounts` moves from the static key list into
+    /// that table's lookup entry, in table order.
     pub fn try_compile(
         payer: &Pubkey,
         instructions: &[Instruction],

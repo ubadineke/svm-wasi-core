@@ -1,36 +1,21 @@
 //! Generic RPC-response compression: the bounty's own "trap #3" — *"Do not
-//! flood the context window. A raw `getProgramAccounts` response will nuke
-//! an agent's context and cost the operator real money on every call...
-//! Judges will call `execute` and count tokens."*
-//!
-//! This is deliberately not tied to any one RPC method's response shape:
-//! it walks arbitrary [`serde_json::Value`] trees (whatever an RPC call in
-//! [`crate::rpc`] handed back, or any other JSON a plugin needs to shrink
-//! before it goes in a `tool-result`) and truncates long strings/arrays
-//! until the result fits a token budget — so every plugin built on this
-//! crate gets this for free instead of reinventing it.
+//! flood the context window... Judges will call `execute` and count
+//! tokens."* Works on any [`serde_json::Value`] tree, not just one RPC
+//! method's shape, truncating strings/arrays until it fits a token budget.
 
 use serde_json::{json, Value};
 
-/// Rough token estimate for a budget check, not exact billing: ~4
-/// bytes/token is the commonly cited average for BPE tokenizers over
-/// English/JSON text. Good enough to decide "is this still too big,"
-/// not meant to match any specific tokenizer exactly.
+/// Rough token estimate (~4 bytes/token), not exact billing.
 pub fn estimate_tokens(s: &str) -> usize {
     s.len().div_ceil(4).max(1)
 }
 
-/// Presets tried from least to most aggressive: `(max_array_items,
-/// max_string_chars)`. Trying a fixed, small set of presets (rather than
-/// an open-ended search) keeps shaping bounded and deterministic — at most
-/// 5 re-serializations of the shrinking tree, never an unbounded loop.
+/// Presets tried least-to-most aggressive: `(max_array_items,
+/// max_string_chars)`. Fixed set, not a search, so shaping stays bounded.
 const AGGRESSIVENESS_LEVELS: &[(usize, usize)] = &[(20, 500), (10, 200), (5, 80), (3, 40), (1, 20)];
 
-/// Shrinks `value` until its shaped JSON fits `budget_tokens`, trying
-/// progressively more aggressive truncation presets. If even the most
-/// aggressive preset doesn't fit, returns that anyway — a structure wide or
-/// deep enough to blow the tightest preset needs the caller to reconsider
-/// what it's returning, not a shaping algorithm that keeps grinding.
+/// Shrinks `value` to fit `budget_tokens`, trying presets until one fits.
+/// Falls back to the most aggressive preset if none do.
 pub fn shape_for_budget(value: &Value, budget_tokens: usize) -> Value {
     let mut most_aggressive = value.clone();
     for &(max_items, max_chars) in AGGRESSIVENESS_LEVELS {
@@ -43,12 +28,8 @@ pub fn shape_for_budget(value: &Value, budget_tokens: usize) -> Value {
     most_aggressive
 }
 
-/// Recursively truncates `value`: strings longer than `max_string_chars`
-/// get a `"...(N chars total)"` marker; arrays longer than
-/// `max_array_items` keep their first `max_array_items` elements (each
-/// shaped in turn) and append one `{"_truncated": true, "omitted_items": N}`
-/// marker object in place of the rest. Objects are shaped key-by-key,
-/// unchanged in shape. Numbers/bools/null pass through untouched.
+/// Recursively truncates strings and arrays past the given limits;
+/// truncated arrays append a `{"_truncated": true, "omitted_items": N}` marker.
 pub fn shape_json(value: &Value, max_array_items: usize, max_string_chars: usize) -> Value {
     match value {
         Value::String(s) => Value::String(truncate_string(s, max_string_chars)),
@@ -134,8 +115,6 @@ mod tests {
 
     #[test]
     fn shape_for_budget_picks_the_least_aggressive_preset_that_fits() {
-        // Small enough that the least-aggressive (20, 500) preset already
-        // fits comfortably — should not lose any data.
         let value = json!({"logs": ["line one", "line two"], "unitsConsumed": 150});
         let shaped = shape_for_budget(&value, 1000);
         assert_eq!(shaped, value);
@@ -143,9 +122,7 @@ mod tests {
 
     #[test]
     fn shape_for_budget_shrinks_a_huge_array_to_fit() {
-        // Simulates a raw getProgramAccounts-style dump: thousands of
-        // largeish entries that would blow any reasonable token budget
-        // unshaped.
+        // Simulates a raw getProgramAccounts-style dump too big for any budget.
         let entries: Vec<Value> = (0..5000)
             .map(|i| json!({"pubkey": format!("Address{i}"), "data": "x".repeat(200)}))
             .collect();
@@ -154,8 +131,7 @@ mod tests {
 
         let shaped = shape_for_budget(&raw, 500);
         assert!(estimate_tokens(&shaped.to_string()) <= 500);
-        // Still useful, not empty: at least the most-aggressive preset's
-        // one kept item plus the truncation marker survive.
+        // Still useful, not empty.
         let array = shaped.as_array().unwrap();
         assert!(!array.is_empty());
     }

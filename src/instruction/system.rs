@@ -1,20 +1,15 @@
 //! System program instruction encoding.
 //!
 //! `SystemInstruction` is bincode-tagged: a 4-byte little-endian `u32`
-//! variant discriminant (the enum's declaration order) followed by the
-//! variant's fields in declaration order, each in its own native
-//! little-endian/raw-byte form. For the fixed-size fields used here (`u64`,
-//! `Pubkey`) that's byte-for-byte identical to a hand-written encoder, so no
-//! borsh/bincode dependency is pulled in just for this.
+//! variant discriminant followed by the variant's fields in declaration
+//! order, each raw little-endian. For the fixed-size fields used here
+//! (`u64`, `Pubkey`) that's byte-for-byte identical to a hand-written
+//! encoder, so no borsh/bincode dependency is pulled in just for this.
 //!
-//! Discriminants and account lists verified against the program's own
-//! codama-generated client (auto-derived straight from the on-chain
-//! program's IDL, so this *is* the wire format, not a description of it):
-//! `solana-program/system`, `clients/rust/src/generated/instructions/
-//! {create_account,transfer_sol,advance_nonce_account}.rs`. The three
-//! remaining nonce instructions (`initialize`/`withdraw`/`authorize`) are
-//! verified against the account-index conventions the on-chain processor
-//! itself enforces: `agave`, `programs/system/src/system_processor.rs`.
+//! Discriminants and account lists verified against `solana-program/system`'s
+//! own codama-generated client (auto-derived from the on-chain IDL) for
+//! `create_account`/`transfer`/`advance_nonce_account`; the remaining nonce
+//! instructions are verified against `agave`'s on-chain processor itself.
 
 use super::{known_id, AccountMeta, Instruction};
 use crate::pubkey::Pubkey;

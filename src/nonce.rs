@@ -1,19 +1,15 @@
 //! Durable-nonce account state: parses the 80 raw bytes the System Program
-//! writes into a nonce account's `data` (as returned by `getAccountInfo`),
-//! and exposes the one thing a durable-nonce transaction actually needs —
-//! the blockhash-equivalent value to place in the message's
-//! `recent_blockhash` field so it never expires waiting on a human
-//! approval (the bounty's own "trap #1").
+//! writes into a nonce account's `data`, and exposes the one thing a
+//! durable-nonce transaction needs — the blockhash-equivalent value for the
+//! message's `recent_blockhash` field, so it never expires waiting on a
+//! human approval (the bounty's own "trap #1").
 //!
-//! Wire format verified against the real implementation, not reconstructed
-//! from a description: `anza-xyz/solana-sdk`, `nonce/src/{state,versions}.rs`.
-//! It's bincode: a `Versions` enum tag (Legacy = 0, Current = 1), then a
-//! `State` enum tag (Uninitialized = 0, Initialized = 1) — both 4-byte LE
-//! `u32`s, matching `SystemInstruction`'s own tagging — then, if
+//! Wire format verified against `anza-xyz/solana-sdk`'s `nonce/src/
+//! {state,versions}.rs`, not reconstructed from a description. It's
+//! bincode: a `Versions` tag (Legacy = 0, Current = 1), then a `State` tag
+//! (Uninitialized = 0, Initialized = 1) — both 4-byte LE `u32`s — then, if
 //! initialized, `Data { authority: Pubkey, durable_nonce: Hash,
-//! fee_calculator: { lamports_per_signature: u64 } }`. Total size is
-//! asserted upstream (`nonce/src/state.rs`, `test_nonce_state_size`) to be
-//! exactly 80 bytes.
+//! fee_calculator: { lamports_per_signature: u64 } }`. Total size: 80 bytes.
 
 use crate::hash::Hash;
 use crate::pubkey::Pubkey;

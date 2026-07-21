@@ -202,11 +202,10 @@ fn key_meta_map_matches(
 /// [`crate::instruction::system`] beyond the program id itself.
 const ADVANCE_NONCE_ACCOUNT_DATA: [u8; 4] = [4, 0, 0, 0];
 
-/// A durable-nonce transaction places `AdvanceNonceAccount` first so the
-/// runtime consumes the nonce before anything else can fail; detecting that
-/// shape here means the nonce account is never accidentally offered up for
-/// address-table-lookup extraction (an ALT-loaded account can't be the
-/// nonce account the runtime checks before any lookups are resolved).
+/// Detects the durable-nonce placement convention (`AdvanceNonceAccount`
+/// first) so the nonce account is never offered up for address-table-lookup
+/// extraction — an ALT-loaded account can't be what the runtime checks
+/// before lookups are resolved.
 fn get_nonce_pubkey(instructions: &[Instruction]) -> Option<Pubkey> {
     let ix = instructions.first()?;
     if ix.program_id != system::id() {

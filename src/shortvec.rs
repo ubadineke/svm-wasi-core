@@ -1,15 +1,8 @@
-//! Solana's "compact-u16" / short-vec length-prefix encoding.
-//!
-//! This is the varint-style scheme the runtime uses to prefix the
-//! signatures array, the account-keys array, and each instruction's
-//! accounts/data arrays in a transaction message. It is *not* borsh, and
-//! not standard LEB128 either — it's Solana's own 7-bits-per-byte,
-//! continuation-bit-in-the-high-bit scheme, capped at 3 bytes (enough to
-//! encode any `u16`). Conflating this with borsh's own (different) varint
-//! scheme is a common mistake this module exists specifically to avoid.
-//!
-//! Reference: <https://docs.rs/solana-short-vec> (`solana_short_vec`, the
-//! upstream crate implementing the same algorithm for `solana-sdk`).
+//! Solana's "compact-u16" / short-vec length-prefix encoding — prefixes the
+//! signatures, account-keys, and instruction accounts/data arrays in a
+//! transaction message. Not borsh, not standard LEB128: Solana's own
+//! 7-bits-per-byte, continuation-bit-in-the-high-bit scheme, capped at 3
+//! bytes. Reference: <https://docs.rs/solana-short-vec>.
 
 const CONTINUATION_BIT: u8 = 0x80;
 const VALUE_MASK: u8 = 0x7f;
@@ -52,13 +45,8 @@ pub fn encode_len(len: u16) -> Vec<u8> {
 }
 
 /// Decodes a compact-u16 length prefix from the start of `bytes`, returning
-/// the decoded value and the remaining, unconsumed slice.
-///
-/// Rejects encodings longer than 3 bytes and non-canonical encodings (any
-/// encoding using more bytes than the minimal one for that value — e.g.
-/// encoding `0` as `[0x80, 0x00]` instead of `[0x00]`), matching the
-/// upstream decoder's strictness rather than silently accepting malformed
-/// wire data.
+/// the value and the remaining slice. Rejects non-canonical encodings (e.g.
+/// `0` as `[0x80, 0x00]` instead of `[0x00]`) to match upstream's strictness.
 pub fn decode_len(bytes: &[u8]) -> Result<(u16, &[u8]), ShortVecError> {
     let mut value: u32 = 0;
     let mut consumed = 0usize;

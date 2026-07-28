@@ -1,13 +1,13 @@
-//! Associated Token Account (ATA) program: deterministic per-(wallet, mint)
-//! token accounts, and the instructions that create them.
+//! Associated Token Account (ATA): deterministic per-(wallet, mint) token
+//! accounts, and the instructions that create them.
 //!
-//! Verified against the real program's own instruction builder —
-//! `solana-program/associated-token-account`, `interface/src/
-//! instruction.rs`, `build_associated_token_account_instruction` — down to
-//! the account order and the single-byte (no framing) instruction data.
+//! Hand-rolled: `spl-associated-token-account` drags in a legacy
+//! `spl-token-2022`/`solana-zk-token-sdk` chain that conflicts with this
+//! crate's deps, and no "-interface" ATA crate exists yet. Verified against
+//! `solana-program/associated-token-account`'s own instruction builder.
 
 use super::{known_id, system, AccountMeta, Instruction};
-use crate::pubkey::{Pubkey, PubkeyError};
+use crate::pubkey::Pubkey;
 
 const CREATE: u8 = 0;
 const CREATE_IDEMPOTENT: u8 = 1;
@@ -16,50 +16,38 @@ pub fn id() -> Pubkey {
     known_id("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 }
 
-/// The deterministic ATA for `(wallet, mint)` under `token_program_id`.
-/// Seed order — `[wallet, token_program_id, mint]` — per
-/// `spl_associated_token_account_interface::address::
-/// get_associated_token_address_and_bump_seed_internal`.
+/// Deterministic ATA for `(wallet, mint)` under `token_program_id`. `None`
+/// only in the statistically-impossible case of no viable PDA bump.
 pub fn get_associated_token_address(
     wallet: &Pubkey,
     mint: &Pubkey,
     token_program_id: &Pubkey,
-) -> Result<Pubkey, PubkeyError> {
-    let (address, _bump) = Pubkey::find_program_address(
-        &[
-            wallet.as_bytes(),
-            token_program_id.as_bytes(),
-            mint.as_bytes(),
-        ],
+) -> Option<Pubkey> {
+    let (address, _bump) = Pubkey::try_find_program_address(
+        &[wallet.as_ref(), token_program_id.as_ref(), mint.as_ref()],
         &id(),
     )?;
-    Ok(address)
+    Some(address)
 }
 
-/// `AssociatedTokenAccountInstruction::Create`. Fails on-chain if the
-/// account already exists — prefer [`create_associated_token_account_idempotent`]
-/// unless a pre-existing account at that address is itself an error case
-/// worth surfacing.
+/// Fails on-chain if the account already exists — prefer
+/// [`create_associated_token_account_idempotent`] unless that should be an error.
 pub fn create_associated_token_account(
     funding_account: &Pubkey,
     wallet: &Pubkey,
     mint: &Pubkey,
     token_program_id: &Pubkey,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     build(funding_account, wallet, mint, token_program_id, CREATE)
 }
 
-/// `AssociatedTokenAccountInstruction::CreateIdempotent`: a no-op (not an
-/// error) if the ATA already exists with the expected owner. This is the
-/// right default for a transfer-building plugin — "create the destination
-/// ATA if it's missing" should never fail just because a concurrent
-/// transaction already created it.
+/// No-op (not an error) if the ATA already exists with the expected owner.
 pub fn create_associated_token_account_idempotent(
     funding_account: &Pubkey,
     wallet: &Pubkey,
     mint: &Pubkey,
     token_program_id: &Pubkey,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     build(
         funding_account,
         wallet,
@@ -75,9 +63,9 @@ fn build(
     mint: &Pubkey,
     token_program_id: &Pubkey,
     tag: u8,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     let associated_account = get_associated_token_address(wallet, mint, token_program_id)?;
-    Ok(Instruction {
+    Some(Instruction {
         program_id: id(),
         accounts: vec![
             AccountMeta::new(*funding_account, true),
@@ -101,9 +89,7 @@ mod tests {
         Pubkey::from_str(s).unwrap()
     }
 
-    /// Same real mainnet (wallet, mint) pair used in `pubkey`'s known-answer
-    /// test: reuse it here so this module is checked against a live,
-    /// on-chain ATA too, not just its own account-list plumbing.
+    /// Same known-mainnet (wallet, mint) pair as `pubkey`'s test.
     #[test]
     fn get_associated_token_address_matches_known_mainnet_ata() {
         let wallet = pk("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1");

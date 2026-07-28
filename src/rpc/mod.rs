@@ -95,6 +95,18 @@ pub struct SignatureStatus {
     pub confirmation_status: Option<String>,
 }
 
+/// One entry from `getSignaturesForAddress` — a transaction that touched a
+/// given address, newest first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignatureInfo {
+    pub signature: String,
+    pub slot: u64,
+    pub err: Option<Value>,
+    pub memo: Option<String>,
+    pub block_time: Option<i64>,
+    pub confirmation_status: Option<String>,
+}
+
 fn decode_pubkey(value: &Value, field: &str) -> Result<Pubkey, RpcError> {
     let s = value
         .as_str()
@@ -381,6 +393,58 @@ impl<T: RpcTransport> RpcClient<T> {
             .collect()
     }
 
+    /// Newest-first list of transactions that touched `address`. Unlike
+    /// most other methods here, the result is a bare array — no
+    /// `{context, value}` envelope — so this goes through [`Self::call`]
+    /// directly, not [`Self::call_value`]. `until` (a signature) bounds the
+    /// search to everything newer than it, for cursor-style pagination
+    /// across repeated polls.
+    pub fn get_signatures_for_address(
+        &self,
+        address: &Pubkey,
+        until: Option<&str>,
+    ) -> Result<Vec<SignatureInfo>, RpcError> {
+        let mut opts = serde_json::Map::new();
+        opts.insert("commitment".to_string(), json!("confirmed"));
+        if let Some(until) = until {
+            opts.insert("until".to_string(), json!(until));
+        }
+        let result = self.call(
+            "getSignaturesForAddress",
+            json!([address.to_string(), opts]),
+        )?;
+        let array = result
+            .as_array()
+            .ok_or_else(|| RpcError::Decode("expected an array result".into()))?;
+        array
+            .iter()
+            .map(|entry| {
+                let signature = require(entry, "signature")?
+                    .as_str()
+                    .ok_or_else(|| RpcError::Decode("`signature` is not a string".into()))?
+                    .to_string();
+                let slot = require(entry, "slot")?
+                    .as_u64()
+                    .ok_or_else(|| RpcError::Decode("`slot` is not a u64".into()))?;
+                let err = entry.get("err").cloned().filter(|v| !v.is_null());
+                let memo = entry.get("memo").and_then(Value::as_str).map(String::from);
+                let block_time = entry.get("blockTime").and_then(Value::as_i64);
+                let confirmation_status = entry
+                    .get("confirmationStatus")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                Ok(SignatureInfo {
+                    signature,
+                    slot,
+                    err,
+                    memo,
+                    block_time,
+                    confirmation_status,
+                })
+            })
+            .collect()
+    }
+
     /// Used to size the lamports a new nonce/token account needs to be
     /// rent-exempt (e.g. 80 bytes for a nonce account, 165 for an SPL Token
     /// account) before a `create_account` instruction.
@@ -619,6 +683,60 @@ mod tests {
             let first = statuses[0].as_ref().unwrap();
             assert_eq!(first.confirmation_status.as_deref(), Some("finalized"));
             assert_eq!(statuses[1], None);
+        }
+
+        #[test]
+        fn parses_get_signatures_for_address_bare_array_result() {
+            // No {context, value} envelope for this method — the result is
+            // the array itself.
+            let transport = MockTransport::ok(vec![json!([
+                {
+                    "signature": "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW",
+                    "slot": 433648265u64,
+                    "err": null,
+                    "memo": "invoice LOGO-04",
+                    "blockTime": 1_798_000_000i64,
+                    "confirmationStatus": "confirmed",
+                },
+            ])]);
+            let client = RpcClient::new(transport);
+
+            let signatures = client
+                .get_signatures_for_address(&Pubkey::from_str(ATA).unwrap(), None)
+                .unwrap();
+
+            assert_eq!(signatures.len(), 1);
+            assert_eq!(signatures[0].memo.as_deref(), Some("invoice LOGO-04"));
+            assert_eq!(
+                signatures[0].confirmation_status.as_deref(),
+                Some("confirmed")
+            );
+            assert_eq!(signatures[0].err, None);
+        }
+
+        #[test]
+        fn get_signatures_for_address_returns_empty_for_an_unused_address() {
+            let transport = MockTransport::ok(vec![json!([])]);
+            let client = RpcClient::new(transport);
+
+            let signatures = client
+                .get_signatures_for_address(&Pubkey::from_str(ATA).unwrap(), None)
+                .unwrap();
+
+            assert!(signatures.is_empty());
+        }
+
+        #[test]
+        fn get_signatures_for_address_sends_until_when_provided() {
+            let transport = MockTransport::ok(vec![json!([])]);
+            let client = RpcClient::new(transport);
+
+            client
+                .get_signatures_for_address(&Pubkey::from_str(ATA).unwrap(), Some("sig123"))
+                .unwrap();
+
+            let received = client.transport.received();
+            assert_eq!(received[0]["params"][1]["until"], "sig123");
         }
 
         #[test]

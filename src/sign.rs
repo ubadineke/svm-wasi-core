@@ -51,7 +51,7 @@ impl Keypair {
     }
 
     pub fn sign_message(&self, message: &[u8]) -> Signature {
-        Signature::new_from_array(self.signing_key.sign(message).to_bytes())
+        Signature::from(self.signing_key.sign(message).to_bytes())
     }
 }
 
@@ -92,7 +92,7 @@ mod tests {
         assert_eq!(keypair.pubkey().to_bytes(), pubkey);
 
         let sig = keypair.sign_message(&[]);
-        assert_eq!(sig.to_bytes(), expected_sig);
+        assert_eq!(<[u8; 64]>::from(sig), expected_sig);
     }
 
     #[test]

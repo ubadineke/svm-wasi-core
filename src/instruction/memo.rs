@@ -1,30 +1,19 @@
-//! Memo program: attach a UTF-8 note to a transaction. Instruction data is
-//! the raw memo bytes with no discriminant/tag at all — the program's own
-//! job is just to validate UTF-8 and log any signer accounts passed to it.
-//!
-//! Program id verified against `solana-program/memo`,
-//! `interface/src/lib.rs` (the widely-deployed id used across the
-//! ecosystem's tooling and explorers).
+//! Thin wrapper over `spl-memo-interface`'s `build_memo` (plain `spl-memo`'s
+//! own `build_memo` is deprecated in favor of it). Targets the v3 program
+//! id (`MemoSq4g...`).
 
-use super::{known_id, AccountMeta, Instruction};
+use super::Instruction;
 use crate::pubkey::Pubkey;
 
 pub fn id() -> Pubkey {
-    known_id("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+    spl_memo_interface::v3::id()
 }
 
-/// Builds a memo instruction. `signers` is typically empty for a simple
-/// "attach this note" use — pass accounts only when the memo should also
-/// assert (and have the runtime log) that they signed this transaction.
+/// Builds a memo instruction. `signers` is typically empty; pass accounts
+/// only when the memo should also assert that they signed this transaction.
 pub fn build_memo(memo: &str, signers: &[Pubkey]) -> Instruction {
-    Instruction {
-        program_id: id(),
-        accounts: signers
-            .iter()
-            .map(|s| AccountMeta::new_readonly(*s, true))
-            .collect(),
-        data: memo.as_bytes().to_vec(),
-    }
+    let signer_refs: Vec<&Pubkey> = signers.iter().collect();
+    spl_memo_interface::instruction::build_memo(&id(), memo.as_bytes(), &signer_refs)
 }
 
 #[cfg(test)]
@@ -43,6 +32,17 @@ mod tests {
     fn signers_become_readonly_signer_metas() {
         let signer = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
         let ix = build_memo("hi", &[signer]);
-        assert_eq!(ix.accounts, vec![AccountMeta::new_readonly(signer, true)]);
+        assert_eq!(ix.accounts.len(), 1);
+        assert_eq!(ix.accounts[0].pubkey, signer);
+        assert!(ix.accounts[0].is_signer);
+        assert!(!ix.accounts[0].is_writable);
+    }
+
+    #[test]
+    fn program_id_matches_current_memo_program() {
+        assert_eq!(
+            id().to_string(),
+            "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+        );
     }
 }

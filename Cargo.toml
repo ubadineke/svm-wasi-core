@@ -3,7 +3,7 @@ name = "svm-wasi-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Solana primitives (pubkeys, PDAs, instructions, transactions, RPC) for wasm32-wasip2 WASI components — no solana-sdk/solana-client dependency."
+description = "wasm32-wasip2 Solana convenience layer: a waki JSON-RPC client, durable-nonce helpers, and response shaping over the modular solana-*/spl-*-interface crates — not a hand-rolled solana-sdk replacement."
 publish = false
 
 [lib]
@@ -18,17 +18,47 @@ sign = ["dep:ed25519-dalek"]
 # devnet smoke tests, scripts — where `wasi:http`/`waki` doesn't apply.
 # Never used by a plugin itself.
 native-http = ["dep:ureq"]
+# DKSAP stealth-address math (ephemeral keypairs, ECDH shared secret,
+# one-time address derivation). Off by default: only plugins that actually
+# do stealth-address work should pull in curve arithmetic.
+stealth = ["dep:curve25519-dalek", "dep:sha2", "dep:rand_core", "dep:hex"]
 
 [dependencies]
-bs58 = "0.5"
-sha2 = "0.10"
-curve25519-dalek = "4"
+# Modular Solana crates, verified (by us, not just taken on faith) to
+# compile clean for wasm32-wasip2 as of this writing — see the crate-level
+# doc comment in `lib.rs` for exactly which features that required and what
+# it does *not* cover.
+solana-pubkey = { version = "4", features = ["curve25519", "sha2"] }
+solana-instruction = "3"
+solana-message = { version = "4", features = ["serde"] }
+solana-hash = "4"
+solana-nonce = { version = "3", features = ["serde"] }
+solana-system-interface = { version = "3", features = ["bincode"] }
+spl-token-interface = "3"
+spl-token-2022-interface = "3.1"
+spl-memo-interface = "2"
+solana-program-pack = "3"
+solana-program-error = "3"
+solana-short-vec = "3"
+solana-signature = { version = "3", features = ["serde"] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+bincode = "1.3"
 thiserror = "2"
 ed25519-dalek = { version = "2", optional = true }
 ureq = { version = "3", optional = true, features = ["json"] }
+curve25519-dalek = { version = "4", optional = true, default-features = false, features = [
+    "alloc",
+    "precomputed-tables",
+    "digest",
+    "rand_core",
+    "zeroize",
+] }
+sha2 = { version = "0.10", optional = true, default-features = false }
+rand_core = { version = "0.6", optional = true, features = ["getrandom"] }
+hex = { version = "0.4", optional = true }
 
 # wasi:http client — only compiled for the wasm component, never on the
 # host, so `cargo test` never links it (matches `plugins/telegram`'s own

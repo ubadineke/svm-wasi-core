@@ -1,32 +1,26 @@
 //! Solana Foundation's official Subscriptions & Allowances program:
 //! delegated, capped, cyclical SPL Token transfers, audited (Cantina) and
 //! live on mainnet. Only the "recurring delegation" model is encoded here —
-//! the minimum needed for an authorize + collect flow — not the fixed
-//! allowance or merchant subscription-plan variants the real program also
-//! supports, and not revocation/cancellation.
+//! not the fixed-allowance/merchant-plan variants, and not
+//! revocation/cancellation.
 //!
-//! Verified against the real program's own source (`solana-program/
-//! subscriptions`), not the announcement or docs. This is a Pinocchio (not
-//! Anchor) program: instruction data is a raw `#[repr(C, packed)]` struct
-//! dump behind a single discriminator byte — not borsh, not bincode-tagged
-//! like System, not TLV like Token-2022. A fourth distinct wire convention,
-//! which is exactly why each program here gets verified independently.
+//! Hand-rolled: no published interface crate exists for this program.
+//! Verified against its own source (`solana-program/subscriptions`). It's a
+//! Pinocchio (not Anchor) program: instruction data is a raw
+//! `#[repr(C, packed)]` struct dump behind a single discriminator byte.
 
 use super::{known_id, system, AccountMeta, Instruction};
-use crate::pubkey::{Pubkey, PubkeyError};
+use crate::pubkey::Pubkey;
 
 const INIT_SUBSCRIPTION_AUTHORITY_DISCRIMINATOR: u8 = 0;
 const CREATE_RECURRING_DELEGATION_DISCRIMINATOR: u8 = 2;
 const TRANSFER_RECURRING_DISCRIMINATOR: u8 = 5;
 
 /// Sentinel for `create_recurring_delegation`'s
-/// `expected_subscription_authority_init_id`: accepts a same-slot creation,
-/// i.e. bundling [`initialize_subscription_authority`] and
-/// [`create_recurring_delegation`] for a brand-new authority in one
-/// transaction ("one-step signup") without needing to predict the `init_id`
-/// `Clock::slot` will assign. Only valid when both instructions land in the
-/// same transaction — an already-existing authority has a real, fixed
-/// `init_id` that must be passed explicitly instead.
+/// `expected_subscription_authority_init_id`, for bundling
+/// [`initialize_subscription_authority`] and [`create_recurring_delegation`]
+/// in the same transaction without predicting the real `init_id`. An
+/// already-existing authority needs its real `init_id` passed instead.
 pub const UNKNOWN_INIT_ID: i64 = i64::MIN;
 
 pub fn id() -> Pubkey {
@@ -35,20 +29,11 @@ pub fn id() -> Pubkey {
 
 /// `["SubscriptionAuthority", user, token_mint]` — one PDA per (user, mint)
 /// pair. The program approves this PDA as the SPL/Token-2022 delegate on
-/// the user's ATA with a `u64::MAX` allowance; individual delegation PDAs
-/// (below) are what actually cap what any delegatee can pull. The
-/// `u64::MAX` approval is not itself the safety boundary — it's inert
-/// without a delegation authorizing a specific delegatee/amount/cadence.
-pub fn subscription_authority_pda(
-    user: &Pubkey,
-    token_mint: &Pubkey,
-) -> Result<(Pubkey, u8), PubkeyError> {
-    Pubkey::find_program_address(
-        &[
-            b"SubscriptionAuthority",
-            user.as_bytes(),
-            token_mint.as_bytes(),
-        ],
+/// the user's ATA with a `u64::MAX` allowance; the delegation PDAs (below)
+/// are what actually cap what any delegatee can pull.
+pub fn subscription_authority_pda(user: &Pubkey, token_mint: &Pubkey) -> Option<(Pubkey, u8)> {
+    Pubkey::try_find_program_address(
+        &[b"SubscriptionAuthority", user.as_ref(), token_mint.as_ref()],
         &id(),
     )
 }
@@ -61,13 +46,13 @@ pub fn recurring_delegation_pda(
     delegator: &Pubkey,
     delegatee: &Pubkey,
     nonce: u64,
-) -> Result<(Pubkey, u8), PubkeyError> {
-    Pubkey::find_program_address(
+) -> Option<(Pubkey, u8)> {
+    Pubkey::try_find_program_address(
         &[
             b"delegation",
-            subscription_authority.as_bytes(),
-            delegator.as_bytes(),
-            delegatee.as_bytes(),
+            subscription_authority.as_ref(),
+            delegator.as_ref(),
+            delegatee.as_ref(),
             &nonce.to_le_bytes(),
         ],
         &id(),
@@ -76,28 +61,22 @@ pub fn recurring_delegation_pda(
 
 /// The program's one fixed, canonical self-CPI event-logging PDA:
 /// `["event_authority"]` — a single account per deployment, not per call.
-pub fn event_authority_pda() -> Result<(Pubkey, u8), PubkeyError> {
-    Pubkey::find_program_address(&[b"event_authority"], &id())
+pub fn event_authority_pda() -> Option<(Pubkey, u8)> {
+    Pubkey::try_find_program_address(&[b"event_authority"], &id())
 }
 
-/// `InitSubscriptionAuthority` (discriminator 0, no instruction args beyond
-/// the discriminator itself).
-///
-/// Safe to include unconditionally, every time, even if the authority
-/// already exists: account creation is skipped when already initialized,
-/// but the `Approve` CPI re-runs unconditionally regardless — re-approving
-/// the same `u64::MAX` allowance is a no-op. That means a caller never
-/// needs an extra RPC round trip to check existence first; just always
-/// include this ahead of [`create_recurring_delegation`]. `user` must sign
-/// (the `Approve` authority is the ATA owner, never a sponsor).
+/// `InitSubscriptionAuthority` (discriminator 0, no args). Safe to include
+/// unconditionally even if the authority already exists — account creation
+/// is skipped, and re-approving the same `u64::MAX` allowance is a no-op.
+/// `user` must sign.
 pub fn initialize_subscription_authority(
     user: &Pubkey,
     token_mint: &Pubkey,
     user_ata: &Pubkey,
     token_program: &Pubkey,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     let (subscription_authority, _bump) = subscription_authority_pda(user, token_mint)?;
-    Ok(Instruction {
+    Some(Instruction {
         program_id: id(),
         accounts: vec![
             AccountMeta::new(*user, true),
@@ -113,17 +92,9 @@ pub fn initialize_subscription_authority(
 
 /// `CreateRecurringDelegation` (discriminator 2). Grants `delegatee` the
 /// right to pull up to `amount_per_period` every `period_length_s` seconds,
-/// optionally expiring at `expiry_ts` (`0` = never).
-///
-/// `start_ts = 0` starts the first period the moment this transaction
-/// lands; the real program then requires a non-zero `expiry_ts`
-/// specifically so a transaction held via durable nonce can't activate the
-/// delegation unboundedly late (enforced on-chain in
-/// `CreateRecurringDelegationData::validate` — this builder does not
-/// re-validate that here, the runtime does).
-///
-/// The `subscription_authority` account must already exist — pair this with
-/// [`initialize_subscription_authority`] in the same transaction.
+/// optionally expiring at `expiry_ts` (`0` = never). `start_ts = 0` starts
+/// the first period immediately; the on-chain program requires a non-zero
+/// `expiry_ts` in that case (enforced on-chain, not re-validated here).
 #[allow(clippy::too_many_arguments)]
 pub fn create_recurring_delegation(
     delegator: &Pubkey,
@@ -135,7 +106,7 @@ pub fn create_recurring_delegation(
     start_ts: i64,
     expiry_ts: i64,
     expected_subscription_authority_init_id: i64,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     let (subscription_authority, _bump) = subscription_authority_pda(delegator, token_mint)?;
     let (delegation_account, _bump) =
         recurring_delegation_pda(&subscription_authority, delegator, delegatee, nonce)?;
@@ -149,7 +120,7 @@ pub fn create_recurring_delegation(
     data.extend_from_slice(&expiry_ts.to_le_bytes());
     data.extend_from_slice(&expected_subscription_authority_init_id.to_le_bytes());
 
-    Ok(Instruction {
+    Some(Instruction {
         program_id: id(),
         accounts: vec![
             AccountMeta::new(*delegator, true),
@@ -163,17 +134,11 @@ pub fn create_recurring_delegation(
 }
 
 /// `TransferRecurring` (discriminator 5) — the "pull". `delegatee` must
-/// sign; the runtime independently re-derives the per-period cap from the
-/// delegation PDA's own on-chain state before moving anything, so this
-/// instruction failing closed does not depend on the caller (or an LLM
-/// deciding what to pass here) having computed the right amount — a wrong
-/// or malicious `amount` simply gets rejected on-chain, it never silently
-/// succeeds for more than the account's own stored state allows.
+/// sign; the runtime enforces the per-period cap on-chain regardless of
+/// what `amount` is requested here.
 ///
-/// Scope note: mints with an active Token-2022 transfer hook need
-/// additional "remaining accounts" the real program forwards to the hook
-/// CPI. Not handled here — this builder targets plain SPL Token/Token-2022
-/// mints without a transfer hook.
+/// Not handled: mints with an active Token-2022 transfer hook need extra
+/// "remaining accounts" this builder doesn't provide.
 #[allow(clippy::too_many_arguments)]
 pub fn transfer_recurring(
     delegation_account: &Pubkey,
@@ -184,17 +149,17 @@ pub fn transfer_recurring(
     receiver_ata: &Pubkey,
     token_program: &Pubkey,
     amount: u64,
-) -> Result<Instruction, PubkeyError> {
+) -> Option<Instruction> {
     let (subscription_authority, _bump) = subscription_authority_pda(delegator, token_mint)?;
     let (event_authority, _bump) = event_authority_pda()?;
 
     let mut data = Vec::with_capacity(1 + 72);
     data.push(TRANSFER_RECURRING_DISCRIMINATOR);
     data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(delegator.as_bytes());
-    data.extend_from_slice(token_mint.as_bytes());
+    data.extend_from_slice(delegator.as_ref());
+    data.extend_from_slice(token_mint.as_ref());
 
-    Ok(Instruction {
+    Some(Instruction {
         program_id: id(),
         accounts: vec![
             AccountMeta::new(*delegation_account, false),
@@ -322,8 +287,8 @@ mod tests {
 
         let mut expected = vec![5u8];
         expected.extend_from_slice(&250_000u64.to_le_bytes());
-        expected.extend_from_slice(delegator.as_bytes());
-        expected.extend_from_slice(mint.as_bytes());
+        expected.extend_from_slice(delegator.as_ref());
+        expected.extend_from_slice(mint.as_ref());
         assert_eq!(ix.data, expected);
         assert_eq!(ix.data.len(), 1 + 72);
 

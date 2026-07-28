@@ -2,10 +2,7 @@
 //! `SubscriptionAuthority` and `RecurringDelegation` PDAs — the read side
 //! complementing [`crate::instruction::subscriptions`]' encode side. Both
 //! layouts are `#[repr(C, packed)]`, zero-copy on-chain structs (not borsh,
-//! not TLV) — verified against the real program's own state structs, not
-//! reconstructed from a description: `solana-program/subscriptions`,
-//! `program/src/state/{header,common,subscription_authority,
-//! recurring_delegation}.rs`.
+//! not TLV), verified against the real program's own state structs.
 
 use crate::pubkey::Pubkey;
 
@@ -166,14 +163,10 @@ impl RecurringDelegation {
         self.expiry_ts != 0 && current_unix_time >= self.expiry_ts
     }
 
-    /// How much is actually available to pull right now, mirroring the
-    /// program's own period-rollover check: a fresh `amount_per_period` is
-    /// available once the period has elapsed (skipped periods don't
-    /// accumulate); otherwise it's whatever remains after
-    /// `amount_pulled_in_period`. Always `0` past `expiry_ts`.
-    ///
-    /// A courtesy calculation, not the enforcement boundary — the runtime
-    /// independently re-derives and re-checks this before any transfer lands.
+    /// How much is available to pull right now: a fresh `amount_per_period`
+    /// once the period has elapsed, otherwise whatever remains after
+    /// `amount_pulled_in_period`. Always `0` past `expiry_ts`. A courtesy
+    /// calculation — the runtime independently re-checks this on-chain.
     pub fn amount_available(&self, current_unix_time: i64) -> u64 {
         if self.is_expired(current_unix_time) {
             return 0;
@@ -208,9 +201,9 @@ mod tests {
     ) -> Vec<u8> {
         let mut data = Vec::with_capacity(SUBSCRIPTION_AUTHORITY_LEN);
         data.push(DISCRIMINATOR_SUBSCRIPTION_AUTHORITY);
-        data.extend_from_slice(user.as_bytes());
-        data.extend_from_slice(token_mint.as_bytes());
-        data.extend_from_slice(payer.as_bytes());
+        data.extend_from_slice(user.as_ref());
+        data.extend_from_slice(token_mint.as_ref());
+        data.extend_from_slice(payer.as_ref());
         data.push(bump);
         data.extend_from_slice(&init_id.to_le_bytes());
         assert_eq!(data.len(), SUBSCRIPTION_AUTHORITY_LEN);
@@ -235,12 +228,12 @@ mod tests {
         data.push(DISCRIMINATOR_RECURRING_DELEGATION); // discriminator
         data.push(1); // version
         data.push(7); // bump
-        data.extend_from_slice(delegator.as_bytes());
-        data.extend_from_slice(delegatee.as_bytes());
-        data.extend_from_slice(payer.as_bytes());
+        data.extend_from_slice(delegator.as_ref());
+        data.extend_from_slice(delegatee.as_ref());
+        data.extend_from_slice(payer.as_ref());
         data.extend_from_slice(&init_id.to_le_bytes());
-        data.extend_from_slice(subscription_authority.as_bytes());
-        data.extend_from_slice(mint.as_bytes());
+        data.extend_from_slice(subscription_authority.as_ref());
+        data.extend_from_slice(mint.as_ref());
         data.extend_from_slice(&current_period_start_ts.to_le_bytes());
         data.extend_from_slice(&period_length_s.to_le_bytes());
         data.extend_from_slice(&expiry_ts.to_le_bytes());

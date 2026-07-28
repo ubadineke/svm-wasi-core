@@ -1,21 +1,24 @@
-//! The outer transaction envelope: a signature array plus a message. This is
-//! what actually gets base64-encoded and returned to a human/host/multisig
-//! for signing — a T1 "unsigned transaction" is not a bare [`Message`], it's
-//! this: a compact-u16-prefixed array of (initially all-zero) signature
-//! slots followed by the message bytes, exactly as the wire format defines.
+//! The outer transaction envelope: a signature array plus a message —
+//! a compact-u16-prefixed array of (initially all-zero) signature slots
+//! followed by the message bytes.
 //!
-//! Mirrors `solana_sdk`'s own split between `Transaction` (legacy message)
-//! and `VersionedTransaction` (any versioned message) rather than one
-//! generic type, since the two message formats already don't share a common
-//! base in this crate either.
+//! Hand-rolled: the official `VersionedTransaction::try_new` requires
+//! signing keypairs up front, which doesn't fit a T1 plugin's "hand an
+//! unsigned tx to a human/multisig" flow.
+//!
+//! Wire bytes: signature count via `solana-short-vec`'s `ShortVec`,
+//! bincode-serialized, followed by the message's own bincode bytes (correct
+//! since the message's `Vec` fields are themselves `serde(with =
+//! "solana_short_vec")`).
 
 use crate::hash::Hash;
-use crate::message::{push_short_vec_len, Message, MessageV0};
+use crate::message::{Message, MessageV0};
 #[cfg(feature = "sign")]
 use crate::sign::Keypair;
 use crate::signature::Signature;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use solana_short_vec::ShortVec;
 
 #[cfg(feature = "sign")]
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -25,9 +28,7 @@ pub enum SignTransactionError {
 }
 
 /// Finds `pubkey`'s index among the first `num_required_signatures` account
-/// keys (the only ones eligible to sign), and fills that signature slot —
-/// shared by both [`Transaction::try_sign`] and
-/// [`VersionedTransaction::try_sign`].
+/// keys and fills that signature slot.
 #[cfg(feature = "sign")]
 fn sign_into(
     signatures: &mut [Signature],
@@ -44,6 +45,13 @@ fn sign_into(
     Ok(())
 }
 
+fn serialize_with_signatures(signatures: &[Signature], message_bytes: Vec<u8>) -> Vec<u8> {
+    let mut buf = bincode::serialize(&ShortVec(signatures.to_vec()))
+        .expect("signature array always serializes");
+    buf.extend_from_slice(&message_bytes);
+    buf
+}
+
 /// A legacy-message transaction with unsigned (all-zero) signature slots.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transaction {
@@ -53,11 +61,10 @@ pub struct Transaction {
 
 impl Transaction {
     /// Wraps `message` with `header.num_required_signatures` all-zero
-    /// signature placeholders — exactly the shape a human, host, or
-    /// multisig expects to receive for approval; nothing here requires a
-    /// key.
+    /// signature placeholders.
     pub fn new_unsigned(message: Message) -> Self {
-        let signatures = vec![Signature::ZERO; message.header.num_required_signatures as usize];
+        let signatures =
+            vec![Signature::default(); message.header.num_required_signatures as usize];
         Self {
             signatures,
             message,
@@ -65,13 +72,8 @@ impl Transaction {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        push_short_vec_len(&mut buf, self.signatures.len());
-        for sig in &self.signatures {
-            buf.extend_from_slice(sig.as_bytes());
-        }
-        buf.extend_from_slice(&self.message.serialize());
-        buf
+        let message_bytes = bincode::serialize(&self.message).expect("message always serializes");
+        serialize_with_signatures(&self.signatures, message_bytes)
     }
 
     pub fn to_base64(&self) -> String {
@@ -79,11 +81,10 @@ impl Transaction {
     }
 
     /// Signs the message bytes with `keypair` and fills in that signer's
-    /// slot. Errors rather than panicking if `keypair`'s pubkey isn't one
-    /// of this message's required signers.
+    /// slot.
     #[cfg(feature = "sign")]
     pub fn try_sign(&mut self, keypair: &Keypair) -> Result<(), SignTransactionError> {
-        let message_bytes = self.message.serialize();
+        let message_bytes = bincode::serialize(&self.message).expect("message always serializes");
         sign_into(
             &mut self.signatures,
             &self.message.account_keys,
@@ -103,7 +104,8 @@ pub struct VersionedTransaction {
 
 impl VersionedTransaction {
     pub fn new_unsigned(message: MessageV0) -> Self {
-        let signatures = vec![Signature::ZERO; message.header.num_required_signatures as usize];
+        let signatures =
+            vec![Signature::default(); message.header.num_required_signatures as usize];
         Self {
             signatures,
             message,
@@ -111,13 +113,12 @@ impl VersionedTransaction {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        push_short_vec_len(&mut buf, self.signatures.len());
-        for sig in &self.signatures {
-            buf.extend_from_slice(sig.as_bytes());
-        }
-        buf.extend_from_slice(&self.message.serialize());
-        buf
+        // bincode-serializing the struct alone omits the 0x80 version prefix.
+        let mut message_bytes = vec![solana_message::MESSAGE_VERSION_PREFIX];
+        message_bytes.extend_from_slice(
+            &bincode::serialize(&self.message).expect("message always serializes"),
+        );
+        serialize_with_signatures(&self.signatures, message_bytes)
     }
 
     pub fn to_base64(&self) -> String {
@@ -125,18 +126,16 @@ impl VersionedTransaction {
     }
 
     /// The blockhash (or durable-nonce value) this transaction was built
-    /// against — convenience accessor, since a caller checking tx freshness
-    /// shouldn't need to know the message's internal field layout.
+    /// against.
     pub fn recent_blockhash(&self) -> Hash {
         self.message.recent_blockhash
     }
 
     /// Signs the message bytes with `keypair` and fills in that signer's
-    /// slot. Errors rather than panicking if `keypair`'s pubkey isn't one
-    /// of this message's required signers.
+    /// slot.
     #[cfg(feature = "sign")]
     pub fn try_sign(&mut self, keypair: &Keypair) -> Result<(), SignTransactionError> {
-        let message_bytes = self.message.serialize();
+        let message_bytes = bincode::serialize(&self.message).expect("message always serializes");
         sign_into(
             &mut self.signatures,
             &self.message.account_keys,
@@ -158,7 +157,7 @@ mod tests {
         let payer = Pubkey::new_from_array([1; 32]);
         let to = Pubkey::new_from_array([2; 32]);
         let ix = system::transfer(&payer, &to, 1_000);
-        let message = Message::try_compile(&payer, &[ix], Hash::default()).unwrap();
+        let message = Message::new(&[ix], Some(&payer));
 
         let tx = Transaction::new_unsigned(message.clone());
 
@@ -166,24 +165,7 @@ mod tests {
             tx.signatures.len(),
             message.header.num_required_signatures as usize
         );
-        assert!(tx.signatures.iter().all(|s| *s == Signature::ZERO));
-    }
-
-    #[test]
-    fn serialize_prefixes_signatures_then_message_bytes() {
-        let payer = Pubkey::new_from_array([1; 32]);
-        let to = Pubkey::new_from_array([2; 32]);
-        let ix = system::transfer(&payer, &to, 1_000);
-        let message = Message::try_compile(&payer, &[ix], Hash::default()).unwrap();
-        let tx = Transaction::new_unsigned(message.clone());
-
-        let bytes = tx.serialize();
-        let mut expected = vec![tx.signatures.len() as u8]; // fits in one shortvec byte
-        for sig in &tx.signatures {
-            expected.extend_from_slice(sig.as_bytes());
-        }
-        expected.extend_from_slice(&message.serialize());
-        assert_eq!(bytes, expected);
+        assert!(tx.signatures.iter().all(|s| *s == Signature::default()));
     }
 
     #[test]
@@ -191,7 +173,7 @@ mod tests {
         let payer = Pubkey::new_from_array([1; 32]);
         let to = Pubkey::new_from_array([2; 32]);
         let ix = system::transfer(&payer, &to, 1_000);
-        let message = Message::try_compile(&payer, &[ix], Hash::default()).unwrap();
+        let message = Message::new(&[ix], Some(&payer));
         let tx = Transaction::new_unsigned(message);
 
         let encoded = tx.to_base64();
@@ -200,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_transaction_unsigned_matches_v0_header() {
+    fn versioned_transaction_unsigned_matches_v0_header_and_version_prefix() {
         let payer = Pubkey::new_from_array([1; 32]);
         let to = Pubkey::new_from_array([2; 32]);
         let ix = system::transfer(&payer, &to, 1_000);
@@ -212,7 +194,17 @@ mod tests {
             message.header.num_required_signatures as usize
         );
         assert_eq!(tx.recent_blockhash(), message.recent_blockhash);
-        assert_eq!(tx.serialize()[0..1], [tx.signatures.len() as u8]);
+
+        let bytes = tx.serialize();
+        // First byte(s): compact-u16 signature count (1 signer here fits in
+        // one byte), followed by that many 64-byte signatures, then the
+        // 0x80 version-prefix byte.
+        assert_eq!(bytes[0], tx.signatures.len() as u8);
+        let version_byte_index = 1 + tx.signatures.len() * 64;
+        assert_eq!(
+            bytes[version_byte_index],
+            solana_message::MESSAGE_VERSION_PREFIX
+        );
     }
 
     #[cfg(feature = "sign")]
@@ -237,15 +229,19 @@ mod tests {
         let payer = keypair.pubkey();
         let to = Pubkey::new_from_array([2; 32]);
         let ix = system::transfer(&payer, &to, 1_000);
-        let message = Message::try_compile(&payer, &[ix], Hash::default()).unwrap();
+        let message = Message::new(&[ix], Some(&payer));
         let mut tx = Transaction::new_unsigned(message);
 
         tx.try_sign(&keypair).unwrap();
 
-        assert_ne!(tx.signatures[0], Signature::ZERO);
-        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&payer.to_bytes()).unwrap();
-        let sig = ed25519_dalek::Signature::from_bytes(&tx.signatures[0].to_bytes());
-        assert!(verifying_key.verify(&tx.message.serialize(), &sig).is_ok());
+        assert_ne!(tx.signatures[0], Signature::default());
+        let message_bytes = bincode::serialize(&tx.message).unwrap();
+        let verifying_key =
+            ed25519_dalek::VerifyingKey::from_bytes(&<[u8; 32]>::try_from(payer.as_ref()).unwrap())
+                .unwrap();
+        let sig_bytes: [u8; 64] = tx.signatures[0].into();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        assert!(verifying_key.verify(&message_bytes, &sig).is_ok());
     }
 
     #[cfg(feature = "sign")]
@@ -267,7 +263,7 @@ mod tests {
         let payer = Pubkey::new_from_array([1; 32]);
         let to = Pubkey::new_from_array([2; 32]);
         let ix = system::transfer(&payer, &to, 1_000);
-        let message = Message::try_compile(&payer, &[ix], Hash::default()).unwrap();
+        let message = Message::new(&[ix], Some(&payer));
         let mut tx = Transaction::new_unsigned(message);
 
         let err = tx.try_sign(&unrelated_keypair).unwrap_err();

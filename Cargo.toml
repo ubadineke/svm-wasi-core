@@ -12,8 +12,10 @@ crate-type = ["rlib"]
 [features]
 default = []
 # Ed25519 signing, off by default: T0/T1 plugins build unsigned transactions
-# and must never pull in key material handling code.
-sign = ["dep:ed25519-dalek"]
+# and must never pull in key material handling code. Includes rand_core so
+# off-host tooling can generate fresh ordinary keypairs (e.g. a durable
+# nonce account's own one-time creation signature).
+sign = ["dep:ed25519-dalek", "dep:rand_core", "ed25519-dalek/rand_core"]
 # A blocking, native (non-wasm) HTTP RPC transport for off-host tooling —
 # devnet smoke tests, scripts — where `wasi:http`/`waki` doesn't apply.
 # Never used by a plugin itself.
@@ -87,3 +89,7 @@ required-features = ["stealth-sign", "native-http"]
 [[example]]
 name = "generate_stealth_meta_address"
 required-features = ["stealth"]
+
+[[example]]
+name = "create_durable_nonce_account"
+required-features = ["sign", "native-http"]

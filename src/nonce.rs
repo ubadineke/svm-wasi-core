@@ -6,11 +6,12 @@
 //! `None` if it isn't usable.
 
 pub use solana_nonce::{
-    state::{Data as NonceData, State as NonceState},
+    state::{Data as NonceData, DurableNonce, State as NonceState},
     versions::Versions as NonceAccount,
 };
 
 use crate::hash::Hash;
+use crate::pubkey::Pubkey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NonceError {
@@ -38,24 +39,31 @@ pub fn usable_blockhash(account: &NonceAccount) -> Option<Hash> {
     }
 }
 
+/// Bincode-encodes a `Current`/`Initialized` nonce account's raw account
+/// data — the exact bytes `getAccountInfo` would hand back for a real one.
+/// Meant for tests: any plugin whose tool consumes a durable nonce needs to
+/// mock this exact response shape, so this lives here once instead of every
+/// downstream test suite hand-assembling its own copy.
+pub fn encode_initialized_nonce_account(
+    authority: Pubkey,
+    blockhash: Hash,
+    lamports_per_signature: u64,
+) -> Vec<u8> {
+    let durable_nonce = DurableNonce::from_blockhash(&blockhash);
+    let data = NonceData::new(authority, durable_nonce, lamports_per_signature);
+    let account = NonceAccount::new(NonceState::Initialized(data));
+    bincode::serialize(&account).expect("nonce account always serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_nonce::state::{Data, DurableNonce};
-    use solana_pubkey::Pubkey;
-
-    fn hand_assembled_current_initialized(authority: Pubkey, blockhash: Hash) -> Vec<u8> {
-        let durable_nonce = DurableNonce::from_blockhash(&blockhash);
-        let data = Data::new(authority, durable_nonce, 5_000);
-        let account = NonceAccount::new(NonceState::Initialized(data));
-        bincode::serialize(&account).unwrap()
-    }
 
     #[test]
     fn parses_current_initialized_account_and_recovers_its_blockhash() {
         let authority = Pubkey::new_from_array([1; 32]);
         let blockhash = Hash::new_from_array([2; 32]);
-        let raw = hand_assembled_current_initialized(authority, blockhash);
+        let raw = encode_initialized_nonce_account(authority, blockhash, 5_000);
 
         let account = parse_nonce_account(&raw).unwrap();
         match &account {
@@ -77,7 +85,7 @@ mod tests {
         let authority = Pubkey::new_from_array([1; 32]);
         let blockhash = Hash::new_from_array([2; 32]);
         let durable_nonce = DurableNonce::from_blockhash(&blockhash);
-        let data = Data::new(authority, durable_nonce, 5_000);
+        let data = NonceData::new(authority, durable_nonce, 5_000);
         let account = NonceAccount::Legacy(Box::new(NonceState::Initialized(data)));
 
         assert_eq!(usable_blockhash(&account), None);

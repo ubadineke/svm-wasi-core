@@ -5,13 +5,18 @@
 //! this fits into.
 //!
 //! `scan_privkey`/`spend_privkey` are read from masked stdin prompts, never
-//! CLI args (shell history) or env vars. Everything else is a plain arg.
+//! CLI args (shell history) or env vars. `--nonce-authority-keypair` is a
+//! file path (an ordinary `solana-keygen` JSON keypair, not a stealth key)
+//! — the transaction now needs this second signature too, since
+//! `build_stealth_sweep` builds against a durable nonce rather than
+//! `getLatestBlockhash` (see `KEY_CUSTODY_FLOW.md` and the plugin README).
 //!
 //! ```text
 //! cargo run --example sign_and_broadcast_sweep --features stealth-sign,native-http -- \
 //!     --rpc-url https://api.devnet.solana.com \
 //!     --ephemeral-pubkey <base58> \
-//!     --transaction-base64 <base64 from build_stealth_sweep>
+//!     --transaction-base64 <base64 from build_stealth_sweep> \
+//!     --nonce-authority-keypair ~/path/to/keypair.json
 //! ```
 
 use std::io::{self, Write};
@@ -19,6 +24,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use svm_wasi_core::rpc::native_transport::NativeHttpTransport;
+use svm_wasi_core::sign::Keypair;
 use svm_wasi_core::stealth::{recover_one_time_privkey, scalar_from_hex};
 use svm_wasi_core::stealth_sign::sign_with_recovered_key;
 use svm_wasi_core::{Pubkey, RpcClient, VersionedTransaction};
@@ -27,12 +33,14 @@ struct Args {
     rpc_url: String,
     ephemeral_pubkey: Pubkey,
     transaction_base64: String,
+    nonce_authority_keypair_path: String,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut rpc_url = None;
     let mut ephemeral_pubkey = None;
     let mut transaction_base64 = None;
+    let mut nonce_authority_keypair_path = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(flag) = iter.next() {
@@ -44,6 +52,7 @@ fn parse_args() -> Result<Args, String> {
                     Some(Pubkey::from_str(&value).map_err(|e| format!("--ephemeral-pubkey: {e}"))?)
             }
             "--transaction-base64" => transaction_base64 = Some(value),
+            "--nonce-authority-keypair" => nonce_authority_keypair_path = Some(value),
             other => return Err(format!("unrecognized flag {other}")),
         }
     }
@@ -52,7 +61,17 @@ fn parse_args() -> Result<Args, String> {
         rpc_url: rpc_url.ok_or("missing --rpc-url")?,
         ephemeral_pubkey: ephemeral_pubkey.ok_or("missing --ephemeral-pubkey")?,
         transaction_base64: transaction_base64.ok_or("missing --transaction-base64")?,
+        nonce_authority_keypair_path: nonce_authority_keypair_path
+            .ok_or("missing --nonce-authority-keypair")?,
     })
+}
+
+fn load_keypair_file(path: &str) -> Result<Keypair, String> {
+    let contents =
+        std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))?;
+    let bytes: Vec<u8> = serde_json::from_str(&contents)
+        .map_err(|e| format!("{path} is not a solana-keygen JSON keypair file: {e}"))?;
+    Keypair::from_bytes(&bytes).map_err(|e| format!("{path}: {e}"))
 }
 
 fn prompt_line(label: &str) -> io::Result<String> {
@@ -149,6 +168,26 @@ fn main() -> ExitCode {
     }
 
     println!("Recovered one-time signer: {one_time_pubkey}");
+
+    let nonce_authority = match load_keypair_file(&args.nonce_authority_keypair_path) {
+        Ok(kp) => kp,
+        Err(e) => {
+            eprintln!("error loading --nonce-authority-keypair: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = tx.try_sign(&nonce_authority) {
+        eprintln!(
+            "nonce authority ({}) is not a required signer of this transaction: {e}",
+            nonce_authority.pubkey()
+        );
+        eprintln!(
+            "double-check --nonce-authority-keypair matches the nonce_authority configured on \
+             stealth-sweep-build."
+        );
+        return ExitCode::FAILURE;
+    }
+
     println!("Signed transaction (base64):\n{}", tx.to_base64());
 
     let rpc = RpcClient::new(NativeHttpTransport::new(args.rpc_url.as_str()));

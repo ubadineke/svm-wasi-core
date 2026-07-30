@@ -131,9 +131,45 @@ pub fn recompute_one_time_address(
     Ok(to_pubkey(&one_time))
 }
 
+/// Recovers the one-time *private* scalar `t = spend_priv + H(scan_priv·ephemeral_pub)
+/// mod L` for a specific detected payment — the actual signing key for `T`. Needs both
+/// the operator's private scalars; never called by anything in this repo except an
+/// external signer, which is exactly why it's gated behind `stealth-sign` rather than
+/// plain `stealth`. See [`recompute_one_time_address`] for the public-key half of this
+/// same computation.
+#[cfg(feature = "stealth-sign")]
+pub fn recover_one_time_privkey(
+    scan_priv: &Scalar,
+    ephemeral_pub: &Pubkey,
+    spend_priv: &Scalar,
+) -> Result<Scalar, StealthError> {
+    let ephemeral_point = decompress(ephemeral_pub, "ephemeral_pub")?;
+    let shared = scan_priv * ephemeral_point;
+    let c = hash_shared_secret(&shared)?;
+    Ok(c + spend_priv)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "stealth-sign")]
+    #[test]
+    fn recovered_privkey_derives_the_same_public_one_time_address() {
+        let (scan_priv, scan_pub) = generate_keypair();
+        let (spend_priv, spend_pub) = generate_keypair();
+        let (ephemeral_scalar, ephemeral_pub) = ephemeral_keypair();
+
+        let expected = derive_one_time_address(&scan_pub, &spend_pub, &ephemeral_scalar)
+            .expect("valid points");
+
+        let t = recover_one_time_privkey(&scan_priv, &ephemeral_pub, &spend_priv)
+            .expect("valid points");
+        let recovered_point = &t * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        let recovered = to_pubkey(&recovered_point);
+
+        assert_eq!(recovered, expected);
+    }
 
     #[test]
     fn sender_and_recipient_derive_the_same_one_time_address() {

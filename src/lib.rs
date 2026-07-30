@@ -24,6 +24,8 @@ pub mod sign;
 pub mod signature;
 #[cfg(feature = "stealth")]
 pub mod stealth;
+#[cfg(feature = "stealth-sign")]
+pub mod stealth_sign;
 pub mod subscription_state;
 pub mod token_state;
 pub mod transaction;
@@ -38,6 +40,8 @@ pub use sign::{Keypair, SignError};
 pub use signature::{ParseSignatureError, Signature};
 #[cfg(feature = "stealth")]
 pub use stealth::StealthError;
+#[cfg(feature = "stealth-sign")]
+pub use stealth_sign::{sign_with_recovered_key, StealthSignError};
 pub use subscription_state::{RecurringDelegation, SubscriptionAuthority, SubscriptionStateError};
 pub use token_state::{
     find_permanent_delegate, find_transfer_fee_config, find_transfer_hook, AccountState, Mint,

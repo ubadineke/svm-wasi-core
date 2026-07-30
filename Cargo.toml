@@ -22,6 +22,13 @@ native-http = ["dep:ureq"]
 # one-time address derivation). Off by default: only plugins that actually
 # do stealth-address work should pull in curve arithmetic.
 stealth = ["dep:curve25519-dalek", "dep:sha2", "dep:rand_core", "dep:hex"]
+# Recovering a one-time private scalar and signing with it directly (not a
+# seed-derived key). Native-only, off-host signer tooling — a human runs
+# this on their own machine with keys ZeroClaw never holds. NEVER a plugin
+# dependency: `stealth_sign` itself refuses to compile for any wasm target
+# (see the module-level `compile_error!`), so this can't be enabled by
+# accident inside a wasm component the way a plain feature flag could be.
+stealth-sign = ["stealth", "sign", "ed25519-dalek/hazmat"]
 
 [dependencies]
 # Modular Solana crates, verified (by us, not just taken on faith) to
@@ -68,3 +75,15 @@ waki = { version = "0.5.1", features = ["json"] }
 
 [dev-dependencies]
 hex = "0.4"
+# Masked stdin prompts for the `sign_and_broadcast_sweep` example only —
+# never linked into the library itself (dev-dependencies never are), so
+# this can't end up in a plugin's wasm component build either way.
+rpassword = "7"
+
+[[example]]
+name = "sign_and_broadcast_sweep"
+required-features = ["stealth-sign", "native-http"]
+
+[[example]]
+name = "generate_stealth_meta_address"
+required-features = ["stealth"]
